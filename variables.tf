@@ -1,4 +1,12 @@
 # Global Variables
+
+# Subscription Variables
+variable "subscription_id" {
+  type        = string
+  description = "Azure Subscription ID - Replace this with your subscription ID"
+  default     = "00000000-0000-0000-0000-000000000000"  # User should replace this value
+}
+
 variable "location" {
   description = "Azure region"
   default     = "westeurope"
