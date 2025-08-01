@@ -271,20 +271,6 @@ resource "azurerm_network_interface_security_group_association" "jumphost" {
   network_security_group_id = azurerm_network_security_group.jumphost.id
 }
 
-# Additional high-priority SSH rule to override JIT
-resource "azurerm_network_security_rule" "jumphost_ssh_override" {
-  name                        = "SSH-Override-JIT"
-  priority                    = 50
-  direction                   = "Inbound"
-  access                      = "Allow"
-  protocol                    = "Tcp"
-  source_port_range          = "*"
-  destination_port_range     = "22"
-  source_address_prefix      = "*"
-  destination_address_prefix = "*"
-  resource_group_name        = azurerm_resource_group.main.name
-  network_security_group_name = azurerm_network_security_group.jumphost.name
-}
 
 # Associate workload NSG with Linux workload NICs
 resource "azurerm_network_interface_security_group_association" "linux" {
