@@ -239,6 +239,7 @@ resource "azurerm_network_interface" "windows" {
 resource "azurerm_windows_virtual_machine" "windows" {
   count               = var.windows_instance_count
   name                = "${var.prefix}-WL-Windows-${count.index + 1}"
+  computer_name       = "WIN-${count.index + 1}"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   size                = var.vm_size
