@@ -262,6 +262,29 @@ resource "azurerm_windows_virtual_machine" "windows" {
   }
 }
 
+# Associate Network Security Groups with Network Interfaces
+##############################################################
+
+# Associate jumphost NSG with jumphost NIC
+resource "azurerm_network_interface_security_group_association" "jumphost" {
+  network_interface_id      = azurerm_network_interface.jumphost.id
+  network_security_group_id = azurerm_network_security_group.jumphost.id
+}
+
+# Associate workload NSG with Linux workload NICs
+resource "azurerm_network_interface_security_group_association" "linux" {
+  count                     = var.linux_instance_count
+  network_interface_id      = azurerm_network_interface.linux[count.index].id
+  network_security_group_id = azurerm_network_security_group.workload.id
+}
+
+# Associate workload NSG with Windows workload NICs
+resource "azurerm_network_interface_security_group_association" "windows" {
+  count                     = var.windows_instance_count
+  network_interface_id      = azurerm_network_interface.windows[count.index].id
+  network_security_group_id = azurerm_network_security_group.workload.id
+}
+
 # Create Ansible inventory file
 resource "local_file" "ansible_inventory" {
   content = <<-EOT
