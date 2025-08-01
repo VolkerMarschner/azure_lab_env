@@ -110,16 +110,28 @@ resource "azurerm_network_security_group" "workload" {
   }
 }
 
-# Generate SSH key for Linux VMs
-resource "tls_private_key" "ssh" {
+# Generate SSH key for Jumphost (JH)
+resource "tls_private_key" "jh_key" {
   algorithm = "RSA"
   rsa_bits  = 4096
 }
 
-# Save private key to file
-resource "local_file" "private_key" {
-  content  = tls_private_key.ssh.private_key_pem
-  filename = "${path.module}/${var.prefix}-private-key.pem"
+# Generate SSH key for Workloads (WL)
+resource "tls_private_key" "wl_key" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+# Save jumphost private key to file
+resource "local_file" "jh_private_key" {
+  content  = tls_private_key.jh_key.private_key_pem
+  filename = "${path.module}/${var.prefix}-JH-private-key.pem"
+}
+
+# Save workload private key to file
+resource "local_file" "wl_private_key" {
+  content  = tls_private_key.wl_key.private_key_pem
+  filename = "${path.module}/${var.prefix}-WL-private-key.pem"
 }
 
 # Create Jump Host NIC
@@ -149,7 +161,7 @@ resource "azurerm_linux_virtual_machine" "jumphost" {
 
   admin_ssh_key {
     username   = var.admin_username
-    public_key = tls_private_key.ssh.public_key_openssh
+    public_key = tls_private_key.jh_key.public_key_openssh
   }
 
   os_disk {
@@ -182,7 +194,7 @@ resource "azurerm_network_interface" "linux" {
 # Create Linux Workload VMs
 resource "azurerm_linux_virtual_machine" "linux" {
   count               = var.linux_instance_count
-  name                = "${var.prefix}-linux-${count.index + 1}"
+  name                = "${var.prefix}-WL-Linux-${count.index + 1}"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   size                = var.vm_size
@@ -193,7 +205,7 @@ resource "azurerm_linux_virtual_machine" "linux" {
 
   admin_ssh_key {
     username   = var.admin_username
-    public_key = tls_private_key.ssh.public_key_openssh
+    public_key = tls_private_key.wl_key.public_key_openssh
   }
 
   os_disk {
@@ -226,7 +238,7 @@ resource "azurerm_network_interface" "windows" {
 # Create Windows Workload VMs
 resource "azurerm_windows_virtual_machine" "windows" {
   count               = var.windows_instance_count
-  name                = "${var.prefix}-windows-${count.index + 1}"
+  name                = "${var.prefix}-WL-Windows-${count.index + 1}"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   size                = var.vm_size
@@ -253,16 +265,16 @@ resource "azurerm_windows_virtual_machine" "windows" {
 resource "local_file" "ansible_inventory" {
   content = <<-EOT
 [jumphost]
-${azurerm_public_ip.jumphost.ip_address} ansible_ssh_private_key_file="${path.module}/${var.prefix}-private-key.pem"
+${azurerm_public_ip.jumphost.ip_address} ansible_host=${azurerm_public_ip.jumphost.ip_address} ansible_ssh_private_key_file="${path.module}/${var.prefix}-JH-private-key.pem"
 
 [linux_workload]
 %{ for index, vm in azurerm_linux_virtual_machine.linux ~}
-linux-${index + 1} ansible_host=${azurerm_network_interface.linux[index].private_ip_address}
+linux-wl-${index} ansible_host=${azurerm_network_interface.linux[index].private_ip_address} ansible_ssh_private_key_file="${path.module}/${var.prefix}-WL-private-key.pem"
 %{ endfor ~}
 
 [windows]
 %{ for index, vm in azurerm_windows_virtual_machine.windows ~}
-windows-${index + 1} ansible_host=${azurerm_network_interface.windows[index].private_ip_address}
+windows-${index} ansible_host=${azurerm_network_interface.windows[index].private_ip_address}
 %{ endfor ~}
 
 [windows:vars]
@@ -273,55 +285,124 @@ ansible_user=${var.admin_username}
 ansible_password=${var.admin_password}
 
 [linux_workload:vars]
-ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p -q -i ${path.module}/${var.prefix}-private-key.pem ${var.admin_username}@${azurerm_public_ip.jumphost.ip_address}"'
+ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p -q -i ${path.module}/${var.prefix}-JH-private-key.pem ${var.admin_username}@${azurerm_public_ip.jumphost.ip_address}"'
 ansible_host_key_checking=False
 ansible_user=${var.admin_username}
-ansible_ssh_private_key_file="${path.module}/${var.prefix}-private-key.pem"
+
+[all:vars]
+ansible_user=${var.admin_username}
 EOT
   filename = "${path.module}/inventory"
 
   depends_on = [
-    local_file.private_key,
+    local_file.jh_private_key,
+    local_file.wl_private_key,
     azurerm_linux_virtual_machine.jumphost,
     azurerm_linux_virtual_machine.linux,
     azurerm_windows_virtual_machine.windows
   ]
 }
 
-# Outputs
+#############################
+# Outputs - Document everything
+#############################
+
 output "resource_group_name" {
-  value = azurerm_resource_group.main.name
+  description = "Name of the created Resource Group"
+  value       = azurerm_resource_group.main.name
+}
+
+output "vnet_id" {
+  description = "ID of the created Virtual Network"
+  value       = azurerm_virtual_network.main.id
+}
+
+output "public_subnet_id" {
+  description = "ID of the public subnet"
+  value       = azurerm_subnet.public.id
+}
+
+output "private_subnet_id" {
+  description = "ID of the private subnet"
+  value       = azurerm_subnet.private.id
+}
+
+output "nat_gateway_id" {
+  description = "ID of the NAT Gateway"
+  value       = azurerm_nat_gateway.main.id
+}
+
+# Write network outputs to a file
+resource "local_file" "vnet-data" {
+  content = <<-EOT
+    Resource Group: ${azurerm_resource_group.main.name}
+    VNet ID: ${azurerm_virtual_network.main.id}
+    Public Subnet ID: ${azurerm_subnet.public.id}
+    Private Subnet ID: ${azurerm_subnet.private.id}
+    NAT Gateway ID: ${azurerm_nat_gateway.main.id}
+  EOT
+  filename = "${path.module}/vnet_data.txt"
+}
+
+# Output VM Instances
+##############################
+
+output "linux_jh_instance_ids" {
+  description = "IDs of created Linux-JH VM instances"
+  value       = [azurerm_linux_virtual_machine.jumphost.id]
+}
+
+output "linux_instance_ids" {
+  description = "IDs of created Linux VM instances"
+  value       = azurerm_linux_virtual_machine.linux[*].id
+}
+
+output "linux-jh_public_ips" {
+  description = "Public IPs of created Linux-JH VM instances"
+  value       = [azurerm_public_ip.jumphost.ip_address]
 }
 
 output "jumphost_public_ip" {
-  value = azurerm_public_ip.jumphost.ip_address
+  description = "Public IP address of the Jumphost instance"
+  value       = azurerm_public_ip.jumphost.ip_address
 }
 
 output "linux_private_ips" {
-  value = azurerm_network_interface.linux[*].private_ip_address
+  description = "Private IPs of created Linux VM instances"
+  value       = azurerm_network_interface.linux[*].private_ip_address
+}
+
+output "windows_instance_ids" {
+  description = "IDs of created Windows VM instances"
+  value       = azurerm_windows_virtual_machine.windows[*].id
 }
 
 output "windows_private_ips" {
-  value = azurerm_network_interface.windows[*].private_ip_address
+  description = "Private IPs of created Windows VM instances"
+  value       = azurerm_network_interface.windows[*].private_ip_address
 }
 
-# Write outputs to files
-resource "local_file" "network-data" {
-  content = <<-EOT
-    Resource Group: ${azurerm_resource_group.main.name}
-    VNet Name: ${azurerm_virtual_network.main.name}
-    Public Subnet ID: ${azurerm_subnet.public.id}
-    Private Subnet ID: ${azurerm_subnet.private.id}
-    NAT Gateway: ${azurerm_nat_gateway.main.id}
-  EOT
-  filename = "${path.module}/network_data.txt"
+output "windows_admin_password" {
+  description = "Administrator password for Windows VMs"
+  value       = var.admin_password
+  sensitive   = true
 }
 
-resource "local_file" "vm-data" {
+# Write VM outputs to a file
+resource "local_file" "vm-instance-data" {
   content = <<-EOT
+    Linux-JH Instance ID: ${jsonencode([azurerm_linux_virtual_machine.jumphost.id])}
+    Linux-WL Instance IDs: ${jsonencode(azurerm_linux_virtual_machine.linux[*].id)}
+    Windows Instance IDs: ${jsonencode(azurerm_windows_virtual_machine.windows[*].id)}
+
     Jumphost Public IP: ${azurerm_public_ip.jumphost.ip_address}
-    Linux VMs Private IPs: ${jsonencode(azurerm_network_interface.linux[*].private_ip_address)}
-    Windows VMs Private IPs: ${jsonencode(azurerm_network_interface.windows[*].private_ip_address)}
+    Jumphost Public IP: ${jsonencode([azurerm_public_ip.jumphost.ip_address])}
+
+    Linux-WL Private IPs: ${jsonencode(azurerm_network_interface.linux[*].private_ip_address)}
+    Windows Private IPs: ${jsonencode(azurerm_network_interface.windows[*].private_ip_address)}
+    
+    Windows Admin Username: ${var.admin_username}
+    Windows Admin Password: ${var.admin_password}
   EOT
-  filename = "${path.module}/vm_data.txt"
+  filename = "${path.module}/vm-instance-data.txt"
 }
